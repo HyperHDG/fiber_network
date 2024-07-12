@@ -11,7 +11,7 @@ def make_geo(foldername):
   # nodes.csv contains the information about the nodes {n_i}
   # id: The node id <--- removed from the list
   # x,y,z: position in x
-  nodes   = pandas.read_csv(foldername + 'nodes.csv')
+  nodes   = pandas.read_csv(foldername + '/nodes.csv')
   nodes   = nodes.to_numpy()[:,1:]
   n_nodes = nodes.shape[0]
 
@@ -19,7 +19,7 @@ def make_geo(foldername):
   # id: the fiber id <--- removed from the list
   # node1: node id of node 1
   # node2: node id of node 2
-  fibers   = pandas.read_csv(foldername + 'fibers.csv')
+  fibers   = pandas.read_csv(foldername + '/fibers.csv')
   fibers   = fibers.to_numpy()[:,1:]
   n_fibers = fibers.shape[0]
 
@@ -31,7 +31,7 @@ def make_geo(foldername):
   # a2: affine constant along fiber2 where the connection is.  
   #     ConnectionPos1 = (1-a1)* fiber1.FirstNode() + (a1)* fiber1.SecondNode()
   #     ConnectionPos2 = (1-a2)* fiber2.FirstNode() + (a2)* fiber2.SecondNode()
-  connections   = pandas.read_csv(foldername + 'connections.csv')
+  connections   = pandas.read_csv(foldername + '/connections.csv')
   connections   = connections.to_numpy()[:,1:]
   n_connections = connections.shape[0]
 
@@ -40,11 +40,11 @@ def make_geo(foldername):
   # (EA, kG_1A, kG_2A, G_xI_x, E_1I_1, E_2I_2):   6 structural constants
   # (n_11,n_12,n_13) : normal 1
   # (n_21,n_22,n_23) : normal 2
-  fibersProps   = pandas.read_csv(foldername + 'fibersProps.csv')
+  fibersProps   = pandas.read_csv(foldername + '/fibersProps.csv')
   fibersProps   = fibersProps.to_numpy()[:,1:]
   n_fibersProps = fibersProps.shape[0]
 
-  connectionsProp   = pandas.read_csv(foldername + 'connectionsProp.csv')
+  connectionsProp   = pandas.read_csv(foldername + '/connectionsProp.csv')
   connectionsProp   = connectionsProp.to_numpy()[:,1:]
   n_connectionsProp = connectionsProp.shape[0]
 
@@ -113,7 +113,7 @@ def make_geo(foldername):
     min_x, min_y, min_z = min(min_x, vertex[0]), min(min_y, vertex[1]), min(min_z, vertex[2])
     max_x, max_y, max_z = max(max_x, vertex[0]), max(max_y, vertex[1]), max(max_z, vertex[2])
 
-  with open('fiber_network_' + str(len(edges)) + '.geo', 'w') as file:
+  with open(foldername + '/fiber_network_' + str(len(edges)) + '.geo', 'w') as file:
     file.write("# This file was auto-generated!\n\n")
     file.write("Space_Dim     = 3;  # Dimension of space.\n")
     file.write("HyperEdge_Dim = 1;  # Dimension of hyperedge (must be uniform).\n")
@@ -148,7 +148,7 @@ def make_geo(foldername):
         file.write("  " + str(prop))
       file.write("\n")
 
-  with open('fiber_network_' + str(len(edges)) + '_points.txt', 'w') as file:
+  with open(foldername + '/fiber_network_' + str(len(edges)) + '_points.txt', 'w') as file:
     for vertex in vertices:
       file.write(str(vertex[0]) + "  " + str(vertex[1]) + "  " + str(vertex[2]) + "\n")
 
@@ -166,7 +166,11 @@ def make_geo(foldername):
              'bx-' )
   plt.show()
 
-  plt.savefig('graph.png')
+  plt.savefig(foldername + '/graph.png')
 
   end_time = datetime.now()
   print("Program ended at", end_time, "after", end_time-start_time)
+
+
+if __name__ == "__main__":
+  make_geo('.')
