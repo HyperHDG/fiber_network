@@ -13,7 +13,7 @@ def tprint(*args, **kwargs):
     print(f"[{time.strftime('%H:%M:%S')}]", *args, **kwargs)
 
 class Network:
-  QUIRKS = ["morgan-2026-01-30"]
+  QUIRKS = ["morgan-2026-01-30", "prop-no-mass"]
 
   def generate_grid(self, nx, ny):
     tprint(f"generating grid graph {nx} x {ny} on unit square")
@@ -193,7 +193,28 @@ class Network:
     ])
     tprint("edgeProps", self.edgeProps.shape)
 
-  def read_morgan(self, path, rescale_props=None, quirk=None):
+  def drop_mass_column(self):
+    """Drop column 0 (mass) from edgeProps (quirk 'prop-no-mass').
+
+    make_geo writes a 17-column layout with mass first:
+      (mass, EA, kG_1A, kG_2A, G_xI_x, E_1I_1, E_2I_2, n1(3), n2(3), w1, w2, ...)
+    but the Timoshenko local solver's extra_data() expects the 6 stiffness
+    constants at index 0 (EA, kG_1A, ...) followed by the two normals, i.e. no
+    mass column. With the mass column present every extra_data index is shifted
+    by one: extra_coeffs[0] reads the mass instead of EA, and dividing by a zero
+    mass (virtual fibers) yields NaN in the assembled matrix. Use this quirk for
+    solver builds that have no mass column.
+    """
+    if self.edgeProps is None:
+      return
+    n_props = self.edgeProps.shape[1]
+    assert n_props > 12, (
+      f"prop-no-mass expects the full property layout (~17 columns incl. mass), "
+      f"got {n_props} columns; refusing to drop the mass column (already trimmed?)")
+    self.edgeProps = self.edgeProps[:, 1:]
+    tprint("quirk prop-no-mass: dropped mass column, edgeProps", self.edgeProps.shape)
+
+  def read_morgan(self, path, rescale_props=None, quirk=()):
     tprint("reading nodes")
     nodes   = pandas.read_csv(path + "/nodes.csv")
     nodes   = nodes.to_numpy()[:,1:]
@@ -211,7 +232,7 @@ class Network:
       print(rescale_props)
       edgeProps *= rescale_props
 
-    if quirk == "morgan-2026-01-30":
+    if "morgan-2026-01-30" in quirk:
       n_edges = edges.shape[0]
       fiber_ids = np.arange(n_edges)
       fiber_edge_ids = np.zeros(n_edges)
@@ -651,8 +672,8 @@ if __name__ == "__main__":
                     help="rescale network so xy bbox is 1x1 (z scaled by same factor)")
   parser.add_argument("--rescale-props", default=None,
                     help="rescale network material properties, format '1,2,3,...'")
-  parser.add_argument("--quirk", default=None, choices=Network.QUIRKS,
-                    help="apply quirk")
+  parser.add_argument("--quirk", nargs="*", default=[], choices=Network.QUIRKS,
+                    help="apply one or more quirks")
   args = parser.parse_args()
 
   if args.rescale_props is not None:
@@ -699,6 +720,8 @@ if __name__ == "__main__":
   network.compute_types(args.bnd_tol)
   if args.grid is None and args.hex is None:
     network.drop_floating_and_small_components(args.min_comp_size)
+  if "prop-no-mass" in args.quirk:
+    network.drop_mass_column()
   if args.output.endswith(".geo"):
     network.write_geo(args.output, no_props=args.no_props)
   else:
