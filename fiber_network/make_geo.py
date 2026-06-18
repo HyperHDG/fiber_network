@@ -400,35 +400,35 @@ class Network:
 
 
   def compute_types(self, tol):
+    """Assign each node a base-3 number with one digit per coordinate axis.
+
+    For axis i the digit is 0 (interior), 1 (at the min, within tolerance), or
+    2 (at the max, within tolerance). The digit of axis i has place value 3**i,
+    so type = d_x + 3*d_y + 9*d_z. A degenerate axis (extent 0, e.g. z of a flat
+    network) gets digit 0.
+    """
     nodes = self.nodes
     edges = self.edges
+    space_dim = nodes.shape[1]
 
     mins = nodes.min(axis=0)
     maxs = nodes.max(axis=0)
     dims = maxs - mins
 
-    # small circle of nodes around the (xy) domain center
-    center = (mins[:2] + maxs[:2]) / 2
-    radius = args.center_radius * max(dims[0], dims[1])
-    dist = np.linalg.norm(nodes[:, :2] - center, axis=1)
+    types = np.zeros(nodes.shape[0], dtype=np.int32)
+    for i in range(space_dim):
+      if dims[i] == 0:
+        continue  # degenerate axis -> interior digit
+      is_min = nodes[:, i] - mins[i] <= tol * dims[i]
+      is_max = maxs[i] - nodes[:, i] <= tol * dims[i]
+      digit = np.where(is_max, 2, np.where(is_min, 1, 0))
+      types += digit * (3 ** i)
 
-    sides = {
-      "xmin": nodes[:,0] - mins[0] <= tol * dims[0],
-      "xmax": maxs[0] - nodes[:,0] <= tol * dims[0],
-      "ymin": nodes[:,1] - mins[1] <= tol * dims[1],
-      "ymax": maxs[1] - nodes[:,1] <= tol * dims[1],
-      "center": dist <= radius,
-    }
-    tprint(f"center circle: c={center}, r={radius:.3e}, {sides['center'].sum()} nodes")
+    self.types_points = types
 
-    dir_side = np.array([sides[x.split('=')[0]]  for x in args.dirichlet])
-    dir_desc = np.array([int(x.split('=')[1], 0) for x in args.dirichlet], dtype=np.int32)
-    self.types_points = np.bitwise_or.reduce(dir_side * dir_desc[:, None], axis=0).astype(np.int32)
-
-    count_dir = (self.types_points != 0).sum()
-    frac_dir = count_dir / len(self.types_points)
-    tprint("count dir", count_dir)
-    tprint(f"frac dir {frac_dir:.5e}")
+    count_bnd = (self.types_points != 0).sum()
+    frac_bnd = count_bnd / len(self.types_points)
+    tprint(f"boundary nodes (nonzero type): {count_bnd} ({frac_bnd:.5e})")
 
     self.types_faces = self.types_points[edges].astype(np.int32)
 
@@ -488,6 +488,51 @@ class Network:
       g.create_dataset("types_faces", data=self.types_faces, compression="gzip")
       for k, v in self.info.items():
         g.attrs[k] = v
+
+
+  def write_geo(self, out, no_props=False):
+    """Write an ASCII .geo file (like domains/cross.geo).
+
+    For a graph network every hyperedge is a 1D beam between two graph nodes,
+    so the graph nodes serve as both points and hypernodes. Hence
+    HYPERNODES_OF_HYPEREDGES and POINTS_OF_HYPEREDGES are both the edge array,
+    and N_HyperNodes == N_Points. Per-edge material properties (if present and
+    not suppressed) are written to the optional HYPEREDGE_PROPERTIES section.
+    """
+    nodes = self.nodes
+    edges = self.edges
+    n_points  = nodes.shape[0]
+    n_edges   = edges.shape[0]
+    space_dim = nodes.shape[1]
+    tprint(f"writing geo file to '{out}'")
+
+    has_props = (hasattr(self, "edgeProps") and self.edgeProps is not None
+                 and not no_props)
+
+    with open(out, "w") as f:
+      f.write("# .geo domain written by make_geo.py\n\n")
+      f.write(f"Space_Dim     = {space_dim};\n")
+      f.write("HyperEdge_Dim = 1;\n\n")
+      f.write(f"N_Points      = {n_points};\n")
+      f.write(f"N_HyperNodes  = {n_points};\n")
+      f.write(f"N_HyperEdges  = {n_edges};\n\n")
+
+      f.write("POINTS:\n")
+      np.savetxt(f, nodes, fmt="%.17g")
+
+      f.write("\nHYPERNODES_OF_HYPEREDGES:\n")
+      np.savetxt(f, edges, fmt="%d")
+
+      f.write("\nTYPES_OF_HYPERFACES:\n")
+      np.savetxt(f, self.types_faces, fmt="%d")
+
+      f.write("\nPOINTS_OF_HYPEREDGES:\n")
+      np.savetxt(f, edges, fmt="%d")
+
+      if has_props:
+        n_props = self.edgeProps.shape[1]
+        f.write(f"\nHYPEREDGE_PROPERTIES: {n_props}\n")
+        np.savetxt(f, self.edgeProps, fmt="%.17g")
 
 
   def clamp_xy(self, x, y):
@@ -591,11 +636,8 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser(description="make_geo2 by Joseph Holten")
   parser.add_argument("-i", "--input", help="input", default=".")
   parser.add_argument("-o", "--output", help="output", default="graph")
-  parser.add_argument("-t", "--dirichlet-tol", help="tolerance to the edge", type=float, default=2e-2)
-  parser.add_argument("--center-radius", help="radius of the 'center' dirichlet circle, relative to max xy extent", type=float, default=5e-2)
+  parser.add_argument("-t", "--bnd-tol", help="tolerance to the boundary (min/max along each axis)", type=float, default=2e-2)
   parser.add_argument("--merge-tol", help="merge nodes tolerance", type=float, default=1e-6)
-  parser.add_argument("--dirichlet", help="borders to clamp as dirichlet",
-                      nargs="+", default=["xmin=0b111111","xmax=0b111111"])
   parser.add_argument("--min-comp-size", type=int, default=10)
   parser.add_argument("--grid", type=int, nargs="+", metavar="N",
     help="generate grid graph, 1 arg: NxN, 2 args: NXxNY")
@@ -654,8 +696,11 @@ if __name__ == "__main__":
   tprint("info", network.info)
   if args.rescale_bbox:
     network.rescale_bbox()
-  network.compute_types(args.dirichlet_tol)
+  network.compute_types(args.bnd_tol)
   if args.grid is None and args.hex is None:
     network.drop_floating_and_small_components(args.min_comp_size)
-  network.write_h5(args.output, no_props=args.no_props)
-  network.write_vtkhdf_view(args.output)
+  if args.output.endswith(".geo"):
+    network.write_geo(args.output, no_props=args.no_props)
+  else:
+    network.write_h5(args.output, no_props=args.no_props)
+    network.write_vtkhdf_view(args.output)
