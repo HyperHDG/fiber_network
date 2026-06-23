@@ -399,10 +399,11 @@ class SolidColor:
 
 
 class ArrayColor:
-  def __init__(self, spec, fg="white", invert=False, categories=""):
+  def __init__(self, spec, fg="white", invert=False, categories="", palette=None):
     """'name' or 'name:N' -> (name, component_or_None)."""
     self.invert = invert
     self.fg = fg
+    self.palette = palette  # matplotlib colormap name for categorical colors
 
     self.categories = []
     items = categories.split(",")
@@ -445,10 +446,23 @@ class ArrayColor:
           annotations.extend([str(v), label])
       ctf.Annotations = annotations
 
-      colors = list(to_rgb(self.fg))
-      n = len(cats) - 1
-      for i in range(n):
-          colors.extend(hsv_to_rgb(i / n, 0.7, 0.9))
+      if self.palette:
+          # Sample a matplotlib colormap for every category (incl. value 0).
+          # Qualitative maps (small N, e.g. tab10/Set2/Dark2) are taken by
+          # discrete index and cycled; continuous maps are spread over [0,1].
+          cmap = plt.get_cmap(self.palette)
+          N = getattr(cmap, "N", 256)
+          ncat = len(cats)
+          colors = []
+          for i in range(ncat):
+              rgb = cmap(i % N) if N <= 32 else cmap(i / builtins.max(ncat - 1, 1))
+              colors.extend(rgb[:3])
+      else:
+          # default: value 0 = foreground color, rest HSV-spaced
+          colors = list(to_rgb(self.fg))
+          n = len(cats) - 1
+          for i in range(n):
+              colors.extend(hsv_to_rgb(i / n, 0.7, 0.9))
       ctf.IndexedColors = colors
       ctf.IndexedOpacities = [1.0] * len(cats)
     else:
@@ -701,6 +715,9 @@ if __name__ == "__main__":
   p.add_argument("--color-invert", action="store_true", help="invert the Cool-to-Warm transfer function")
   p.add_argument("--color-categories", default="",
                  help="treat values as categorical, e.g. '1-4,7'; uses HSV-spaced colors")
+  p.add_argument("--color-palette", default=None,
+                 help="matplotlib colormap for categorical colors (e.g. tab10, Set2, viridis); "
+                      "default is foreground + HSV-spaced")
   p.add_argument("--warp-by", default="values:6,7,8",
                  help="warp spec 'array:c1,c2,c3' (vector) or 'array:c:axis' (scalar*axis); 'none' disables")
   p.add_argument("--warp-scale", type=float, default=1.,
@@ -824,7 +841,8 @@ if __name__ == "__main__":
     elif args.tubes_radius != 0.:
       ops.append(Tubes(radius=args.tubes_radius, sides=args.tubes_sides))
     if args.color_by:
-      ops.append(ArrayColor(args.color_by, fg=fg, invert=args.color_invert, categories=args.color_categories))
+      ops.append(ArrayColor(args.color_by, fg=fg, invert=args.color_invert,
+                            categories=args.color_categories, palette=args.color_palette))
     else:
       ops.append(SolidColor(fg))
     return ops
