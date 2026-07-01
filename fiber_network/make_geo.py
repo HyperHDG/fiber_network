@@ -594,6 +594,8 @@ class Network:
     dims = maxs - mins
     self.info["size"] = dims
 
+  def write_points(self, out):
+    np.savetxt(out, self.nodes)
 
   def write_vtkhdf_view(self, out):
     """Add VTKHDF view to the .geo.h5 file: virtual Connectivity over /domain/edges,
@@ -674,6 +676,7 @@ if __name__ == "__main__":
                     help="rescale network material properties, format '1,2,3,...'")
   parser.add_argument("--quirk", nargs="*", default=[], choices=Network.QUIRKS,
                     help="apply one or more quirks")
+  parser.add_argument("--points", help="points")
   args = parser.parse_args()
 
   if args.rescale_props is not None:
@@ -727,3 +730,5 @@ if __name__ == "__main__":
   else:
     network.write_h5(args.output, no_props=args.no_props)
     network.write_vtkhdf_view(args.output)
+  if args.points:
+    network.write_points(args.points)
