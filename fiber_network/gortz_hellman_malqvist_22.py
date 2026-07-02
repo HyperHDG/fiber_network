@@ -108,27 +108,60 @@ class gortz_hellman_malqvist_22:
     self.coarse_basis     = sp.csr_matrix(coarse_basis)
     self.coarse_basis_int = sp.csr_matrix(coarse_basis_int)
 
+    # cached factorizations, built on the first precond call and reused across all
+    # CG iterations (see _ensure_setup)
+    self._solver_id = None  # id() of the lhs_mat the cache was built for
+    self._supports  = None  # per-subdomain support row indices
+
+
+  def _ensure_setup(self, lhs_mat, epsilon):
+    # Factorize the coarse and local operators once and reuse them for every
+    # precond call that shares the same lhs_mat (all CG iterations). This is the
+    # same LU factorization spsolve does internally -- only the per-call
+    # refactorization is removed, so the preconditioner applied is unchanged.
+    if self._solver_id == id(lhs_mat):
+      return
+
+    # support (rows with weight > epsilon) of each coarse basis column defines one
+    # subdomain; depends only on coarse_basis, so compute it once.
+    if self._supports is None:
+      cb = self.coarse_basis.tocsc()
+      self._supports = [ np.sort(cb.indices[cb.indptr[k]:cb.indptr[k+1]]
+                                 [cb.data[cb.indptr[k]:cb.indptr[k+1]] > epsilon])
+                         for k in range(cb.shape[1]) ]
+
+    coarse_op = self.coarse_basis_int.T.dot(lhs_mat.dot(self.coarse_basis_int))
+    self._coarse_solve = sp.linalg.factorized(sp.csc_matrix(coarse_op))
+    self._local_solve  = [ sp.linalg.factorized(sp.csc_matrix(lhs_mat[nj, :][:, nj]))
+                           if nj.size else None
+                           for nj in self._supports ]
+    self._solver_id = id(lhs_mat)
+
 
   def precond(self, lhs_mat, rhs_vec, n_jobs=None, epsilon=1e-14):
-    helper_lhs = self.coarse_basis_int.T.dot(lhs_mat.dot(self.coarse_basis_int))
-    helper_rhs = self.coarse_basis_int.T.dot(rhs_vec)
-    result_vec = self.coarse_basis_int.dot(sp.linalg.spsolve(helper_lhs, helper_rhs))
+    self._ensure_setup(lhs_mat, epsilon)
 
+    # coarse correction: B_int (B_int^T A B_int)^-1 B_int^T rhs
+    result_vec = self.coarse_basis_int.dot(
+      self._coarse_solve(self.coarse_basis_int.T.dot(rhs_vec)))
+
+    # local corrections: the restriction Ij^T rhs is just rhs[nj] and the
+    # prolongation Ij z is a scatter-add result[nj] += z, so the dense n x |nj|
+    # matrix Ij is never formed.
     if n_jobs is None:
-      for k in range(self.coarse_basis.shape[1]):
-        nj = np.nonzero(self.coarse_basis.getcol(k) > epsilon)[0]
-        Ij = np.zeros((self.coarse_basis.shape[0], len(nj)))
-        Ij[nj, np.arange(len(nj))] = 1
-        result_vec += Ij.dot(sp.linalg.spsolve(lhs_mat[nj, :][:, nj], Ij.T.dot(rhs_vec)))
+      for nj, solve in zip(self._supports, self._local_solve):
+        if solve is not None:
+          result_vec[nj] += solve(rhs_vec[nj])
       return result_vec
 
-    def process(k):
-      nj = np.nonzero(self.coarse_basis.getcol(k) > epsilon)[0]
-      Ij = np.zeros((self.coarse_basis.shape[0], len(nj)))
-      Ij[nj, np.arange(len(nj))] = 1
-      return Ij.dot(sp.linalg.spsolve(lhs_mat[nj, :][:, nj], Ij.T.dot(rhs_vec)))
+    # threads, not processes: the cached factorizations are not picklable, and the
+    # scatter-add is kept serial below to avoid races on result_vec.
+    def process(nj, solve):
+      return nj, solve(rhs_vec[nj])
 
-    result = Parallel(n_jobs=n_jobs)(delayed(process)(i) for i in range(self.coarse_basis.shape[1]))
-    for component in result:  result_vec += component
+    result = Parallel(n_jobs=n_jobs, prefer="threads")(
+      delayed(process)(nj, solve)
+      for nj, solve in zip(self._supports, self._local_solve) if solve is not None)
+    for nj, z in result:  result_vec[nj] += z
 
     return result_vec
