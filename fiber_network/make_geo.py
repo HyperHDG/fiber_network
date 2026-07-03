@@ -506,13 +506,18 @@ class Network:
     tprint(f"  longest edge now {new_len_max:.4g} ({new_len_max/R:.2f} x R)")
 
 
-  def compute_types(self, tol):
+  def compute_types(self, tol, axes="xy"):
     """Assign each node a base-3 number with one digit per coordinate axis.
 
     For axis i the digit is 0 (interior), 1 (at the min, within tolerance), or
     2 (at the max, within tolerance). The digit of axis i has place value 3**i,
     so type = d_x + 3*d_y + 9*d_z. A degenerate axis (extent 0, e.g. z of a flat
     network) gets digit 0.
+
+    Only axes named in `axes` get nonzero digits (default "xy"): the z faces of
+    a thin fiber slab are only touched where a fiber happens to graze the
+    bounding box, so typing them yields a sparse, gappy pseudo-boundary that is
+    not a physical clamp.
     """
     nodes = self.nodes
     edges = self.edges
@@ -524,6 +529,8 @@ class Network:
 
     types = np.zeros(nodes.shape[0], dtype=np.int32)
     for i in range(space_dim):
+      if "xyz"[i] not in axes:
+        continue  # axis not part of the boundary -> interior digit
       if dims[i] == 0:
         continue  # degenerate axis -> interior digit
       is_min = nodes[:, i] - mins[i] <= tol * dims[i]
@@ -746,6 +753,10 @@ if __name__ == "__main__":
   parser.add_argument("-i", "--input", help="input", default=".")
   parser.add_argument("-o", "--output", help="output", default="graph")
   parser.add_argument("-t", "--bnd-tol", help="tolerance to the boundary (min/max along each axis)", type=float, default=2e-2)
+  parser.add_argument("--bnd-axes", default="xy",
+                    help="axes whose bbox faces get boundary types (default "
+                         "'xy'; the z faces of a thin slab are grazing "
+                         "artifacts, pass 'xyz' to type them anyway)")
   parser.add_argument("--merge-tol", help="merge nodes tolerance", type=float, default=1e-6)
   parser.add_argument("--min-comp-size", type=int, default=10)
   parser.add_argument("--grid", type=int, nargs="+", metavar="N",
@@ -811,12 +822,12 @@ if __name__ == "__main__":
   tprint("info", network.info)
   if args.rescale_bbox:
     network.rescale_bbox()
-  network.compute_types(args.bnd_tol)
+  network.compute_types(args.bnd_tol, args.bnd_axes)
   if args.grid is None and args.hex is None:
     network.drop_floating_and_small_components(args.min_comp_size)
   if args.subdivide is not None:
     network.subdivide_long_edges(args.subdivide)
-    network.compute_types(args.bnd_tol)   # type new nodes, rebuild face types
+    network.compute_types(args.bnd_tol, args.bnd_axes)   # type new nodes, rebuild face types
   if "prop-no-mass" in args.quirk:
     network.drop_mass_column()
   if args.output.endswith(".geo"):
