@@ -628,7 +628,7 @@ class Network:
              f"({100*n_below/n:.3g}%), contrast {contrast:.3e} -> {contrast_after:.3e}")
 
 
-  def node_edge_dedupe(self, merge_tol):
+  def node_edge_dedupe(self, merge_tol, check_dups=False):
     nodes = self.nodes
     edges = self.edges
     edgeProps = self.edgeProps
@@ -641,7 +641,7 @@ class Network:
     # sorting a scalar int64 key is much faster than np.unique(..., axis=0)'s row lexsort
     assert n_nodes < 3_000_000_000, "edge int64-key encoding would overflow"
 
-    if args.check_dups:
+    if check_dups:
       # bit-exact duplicates are distance-0 pairs, subsumed by the KD-tree merge below;
       # only worth the extra full sorts as an explicit diagnostic
       _, counts = np.unique(nodes, axis=0, return_counts=True)
@@ -709,18 +709,19 @@ class Network:
     self.edgeProps = edgeProps
 
 
-  def compute_types(self, tol):
+  def compute_types(self, tol, faces=("xmin", "xmax"), bitmask=None, center_radius=0.05):
     """Node types from the bounding box faces a node lies on (within tol * extent).
 
-    Default, --dirichlet FACE ...: HyperHDG's ternary convention (node_descriptor/cubic.hxx):
+    faces (--dirichlet FACE ...): HyperHDG's ternary convention (node_descriptor/cubic.hxx):
     type = sum over axes of 3**axis * d, with d = 1 on the min face, 2 on the max face, 0
     inside; x is axis 0. So xmin -> 1, xmax -> 2, ymin -> 3, ymax -> 6, zmin -> 9, zmax -> 18,
     and a corner on xmin and ymax -> 7. Only the faces listed get a digit. Solvers then list
     the types they treat as Dirichlet (dirichlet_nodes in their parameters).
 
-    --dirichlet-bitmask FACE=MASK ...: one bit per beam degree of freedom (timowave's
-    is_dirichlet), masks of several faces OR together; FACE may also be "center", a disc of
-    radius --center-radius around the sheet center.
+    bitmask (--dirichlet-bitmask FACE=MASK ...): one bit per beam degree of freedom
+    (timowave's is_dirichlet), masks of several faces OR together; FACE may also be "center",
+    a disc of radius center_radius (relative to the xy extent) around the sheet center.
+    A non-empty bitmask takes precedence over faces.
     """
     nodes = self.nodes
     edges = self.edges
@@ -737,18 +738,18 @@ class Network:
       else:   # flat axis: no faces, else every node would be on both
         sides[ax + "min"] = sides[ax + "max"] = np.zeros(len(nodes), dtype=bool)
 
-    if args.dirichlet_bitmask:
+    if bitmask:
       # small circle of nodes around the (xy) domain center
       center = (mins[:2] + maxs[:2]) / 2
-      radius = args.center_radius * max(dims[0], dims[1])
+      radius = center_radius * max(dims[0], dims[1])
       sides["center"] = np.linalg.norm(nodes[:, :2] - center, axis=1) <= radius
       tprint(f"center circle: c={center}, r={radius:.3e}, {sides['center'].sum()} nodes")
-      dir_side = np.array([sides[x.split('=')[0]]  for x in args.dirichlet_bitmask])
-      dir_desc = np.array([int(x.split('=')[1], 0) for x in args.dirichlet_bitmask], dtype=np.int32)
+      dir_side = np.array([sides[x.split('=')[0]]  for x in bitmask])
+      dir_desc = np.array([int(x.split('=')[1], 0) for x in bitmask], dtype=np.int32)
       self.types_points = np.bitwise_or.reduce(dir_side * dir_desc[:, None], axis=0).astype(np.int32)
     else:
       types = np.zeros(len(nodes), dtype=np.int32)
-      for face in args.dirichlet:
+      for face in faces:
         axis, end = "xyz".index(face[0]), face[1:]
         types += sides[face] * (1 if end == "min" else 2) * 3 ** axis
       self.types_points = types
@@ -967,7 +968,90 @@ class Network:
     if "size" in self.info:
       self.info["size"] = np.asarray(self.info["size"], dtype=float) * s
 
-if __name__ == "__main__":
+  # ---- extension points: a subclass adds a generator by overriding generate_from_args ----
+
+  def generate_from_args(self, args, parser):
+    """Build the network from parsed options (see make_parser). Returns True for a
+    generated (synthetic) network, False for one read from files, which is pruned
+    of floating and small components later.
+
+    A subclass with its own generator overrides this: handle its options, otherwise
+    return super().generate_from_args(args, parser). See examples/custom_generator.py."""
+    if args.grid is not None:
+      if len(args.grid) == 1:
+        nx = ny = args.grid[0]
+      elif len(args.grid) == 2:
+        nx, ny = args.grid
+      else:
+        parser.error("--grid takes 1 or 2 arguments")
+      self.generate_grid(nx, ny)
+      self.generate_synthetic_properties(width=0.1 / max(nx, ny))
+    elif args.hex is not None:
+      if len(args.hex) == 1:
+        nx = ny = args.hex[0]
+        nz = 1
+      elif len(args.hex) == 2:
+        nx, ny = args.hex
+        nz = 1
+      elif len(args.hex) == 3:
+        nx, ny, nz = args.hex
+      else:
+        parser.error("--hex takes 1 to 3 arguments")
+      self.generate_honeycomb(nx, ny, nz)
+      self.generate_synthetic_properties(width=0.1 / max(nx, ny))
+    elif args.mikado is not None:
+      if len(args.mikado) == 1:
+        mass, r = args.mikado[0], 0.05
+      elif len(args.mikado) == 2:
+        mass, r = args.mikado
+      else:
+        parser.error("--mikado takes 1 or 2 arguments")
+      self.generate_mikado(mass, r=r, seed=args.seed, min_edge=args.min_edge)
+      self.generate_synthetic_properties(width=1/mass)
+    else:
+      rescale_props = None
+      if args.rescale_props is not None:
+        rescale_props = np.array(list(map(float, args.rescale_props.split(","))))
+      self.read_morgan(args.input, rescale_props=rescale_props, quirk=args.quirk)
+      self.verify_nonzero()
+      if args.clamp_xy is not None:
+        if len(args.clamp_xy) == 1:
+          fx = fy = args.clamp_xy[0]
+        elif len(args.clamp_xy) == 2:
+          fx, fy = args.clamp_xy
+        else:
+          parser.error("--clamp-xy takes 1 or 2 arguments")
+        self.clamp_xy(fx, fy)
+      self.node_edge_dedupe(args.merge_tol, check_dups=args.check_dups)
+      return False
+    return True
+
+  def process_from_args(self, args, synthetic):
+    """The processing steps after generation, in the order the options document."""
+    tprint("info", self.info)
+    if args.subdivide is not None:
+      self.subdivide_long_edges(args.subdivide)
+    if args.prop_cutoff is not None:
+      self.prop_cutoff(args.prop_cutoff)
+    if args.rescale_bbox:
+      self.rescale_bbox()
+    if args.scale is not None:
+      self.scale(args.scale)
+    self.compute_types(args.dirichlet_tol, faces=args.dirichlet, bitmask=args.dirichlet_bitmask,
+                       center_radius=args.center_radius)
+    if not synthetic:
+      self.drop_floating_and_small_components(args.min_comp_size)
+
+  def write_from_args(self, args):
+    if args.output.endswith(".geo"):
+      self.write_geo(args.output, no_props=args.no_props)
+    else:
+      self.write_h5(args.output, no_props=args.no_props)
+      self.write_vtkhdf_view(args.output)
+
+
+def make_parser():
+  """The command line of make_geo.py; an extension adds its own options to it."""
   parser = argparse.ArgumentParser(description="make_geo: generate, convert and process fiber network domains")
   parser.add_argument("-i", "--input", help="input", default=".")
   parser.add_argument("-o", "--output", help="output file: .geo.h5 (default), or .geo for the legacy ASCII format", default="graph.geo.h5")
@@ -1023,72 +1107,22 @@ if __name__ == "__main__":
                          "pieces, so no edge exceeds the P x P subdomain scale "
                          "(= 1/P on a unit-bbox network); mass (property col 0) "
                          "is split evenly, other properties copied")
-  args = parser.parse_args()
+  return parser
+
+
+def main(argv=None, network_cls=Network, parser=None):
+  """Run the make_geo pipeline: generate or read, process, write. An extension passes
+  its Network subclass and its extended parser. Returns the network."""
+  parser = parser or make_parser()
+  args = parser.parse_args(argv)
   if args.dirichlet_bitmask and args.dirichlet != ["xmin", "xmax"]:
     parser.error("--dirichlet and --dirichlet-bitmask exclude each other")
+  network = network_cls()
+  synthetic = network.generate_from_args(args, parser)
+  network.process_from_args(args, synthetic)
+  network.write_from_args(args)
+  return network
 
-  rescale_props = None
-  if args.rescale_props is not None:
-    rescale_props = np.array(list(map(float, args.rescale_props.split(","))))
 
-  network = Network()
-  if args.grid is not None:
-    if len(args.grid) == 1:
-      nx = ny = args.grid[0]
-    elif len(args.grid) == 2:
-      nx, ny = args.grid
-    else:
-      parser.error("--grid takes 1 or 2 arguments")
-    network.generate_grid(nx, ny)
-    network.generate_synthetic_properties(width=0.1 / max(nx, ny))
-  elif args.hex is not None:
-    if len(args.hex) == 1:
-      nx = ny = args.hex[0]
-      nz = 1
-    elif len(args.hex) == 2:
-      nx, ny = args.hex
-      nz = 1
-    elif len(args.hex) == 3:
-      nx, ny, nz = args.hex
-    else:
-      parser.error("--hex takes 1 or 2 arguments")
-    network.generate_honeycomb(nx, ny, nz)
-    network.generate_synthetic_properties(width=0.1 / max(nx, ny))
-  elif args.mikado is not None:
-    if len(args.mikado) == 1:
-      mass, r = args.mikado[0], 0.05
-    elif len(args.mikado) == 2:
-      mass, r = args.mikado
-    else:
-      parser.error("--mikado takes 1 or 2 arguments")
-    network.generate_mikado(mass, r=r, seed=args.seed, min_edge=args.min_edge)
-    network.generate_synthetic_properties(width=1/mass)
-  else:
-    network.read_morgan(args.input, rescale_props=rescale_props, quirk=args.quirk)
-    network.verify_nonzero()
-    if args.clamp_xy is not None:
-      if len(args.clamp_xy) == 1:
-        fx = fy = args.clamp_xy[0]
-      elif len(args.clamp_xy) == 2:
-        fx, fy = args.clamp_xy
-      else:
-        parser.error("--clamp-xy takes 1 or 2 arguments")
-      network.clamp_xy(fx, fy)
-    network.node_edge_dedupe(args.merge_tol)
-  tprint("info", network.info)
-  if args.subdivide is not None:
-    network.subdivide_long_edges(args.subdivide)
-  if args.prop_cutoff is not None:
-    network.prop_cutoff(args.prop_cutoff)
-  if args.rescale_bbox:
-    network.rescale_bbox()
-  if args.scale is not None:
-    network.scale(args.scale)
-  network.compute_types(args.dirichlet_tol)
-  if args.grid is None and args.hex is None and args.mikado is None:
-    network.drop_floating_and_small_components(args.min_comp_size)
-  if args.output.endswith(".geo"):
-    network.write_geo(args.output, no_props=args.no_props)
-  else:
-    network.write_h5(args.output, no_props=args.no_props)
-    network.write_vtkhdf_view(args.output)
+if __name__ == "__main__":
+  main()

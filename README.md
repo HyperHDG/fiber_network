@@ -18,8 +18,15 @@ pip install -r requirements.txt
 `pacman -S paraview`, `apt install paraview`, `brew install --cask paraview`, or the binaries
 from paraview.org.
 
-The scripts run from a checkout, `python fiber_network/make_geo.py ...`. Nothing needs to be
-installed.
+The scripts run from a checkout, `python fiber_network/make_geo.py ...`, nothing needs to be
+installed. To import the package from elsewhere, for an extension or from HyperHDG, install it
+in place:
+
+```
+pip install -e .          # then: from fiber_network.make_geo import Network, make_parser, main
+```
+
+which also puts `make_geo` and `net_stats` on the PATH.
 
 ## Simplest example
 
@@ -66,6 +73,23 @@ ASCII `.geo` format that HyperHDG read before.
 
 Every script prints its options with `--help`.
 
+## Extending make_geo
+
+A generator that does not belong in this repo is added without touching it. `make_geo.py`
+exposes three things: `Network`, whose `generate_from_args(args, parser)` method turns parsed
+options into a network; `make_parser()`, the command line; and `main(argv, network_cls, parser)`,
+the pipeline. A subclass adds its options to the parser, overrides `generate_from_args` to
+handle them and defers to `super()` otherwise, and passes itself and the parser to `main`.
+Processing, node types and output are inherited. `examples/custom_generator.py` does this for
+a ladder graph:
+
+```
+python examples/custom_generator.py --ladder 8 --subdivide 4 -o ladder.geo.h5
+```
+
+The hook returns `True` for a generated network and `False` for one read from files, which is
+what decides whether floating and small components are pruned.
+
 ## Examples
 
 `examples/` has three scripts that write into `examples/output/`:
@@ -74,6 +98,7 @@ Every script prints its options with `--help`.
 examples/generate.sh     # grid, honeycomb, mikado networks; subdivision and clamping; legacy .geo
 examples/analyze.sh      # net_stats, degree distribution, histograms, Dirichlet spacing
 examples/visualize.sh    # pvbatch renders
+examples/custom_generator.py --ladder 8 -o ladder.geo.h5    # a generator added from outside
 ```
 
 ## Tests

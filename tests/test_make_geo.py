@@ -1,12 +1,14 @@
 """make_geo.py: generators and processing steps through the class, the whole
 pipeline through the command line."""
 import re
+import subprocess
+import sys
 
 import h5py
 import numpy as np
 
 import make_geo
-from conftest import run
+from conftest import ROOT, run
 
 
 def check_graph(net):
@@ -131,3 +133,44 @@ def test_cli_subdivide(mikado_h5):
     ext = (points[:, :2].max(0) - points[:, :2].min(0)).max()
     lengths = np.linalg.norm(points[edges[:, 1]] - points[edges[:, 0]], axis=1)
     assert lengths.max() <= ext / 4 * (1 + 1e-12)
+
+
+# node types through the class (no command line involved)
+
+def test_compute_types_ternary_and_bitmask():
+    net = make_geo.Network()
+    net.generate_grid(4, 4)
+    net.compute_types(0.02, faces=("ymin",))
+    assert (net.types_points == 3).sum() == 4 and (net.types_points != 0).sum() == 4
+    net.compute_types(0.02, faces=("xmin", "zmax"))          # flat network: no z faces
+    assert set(np.unique(net.types_points)) == {0, 1}
+    net.compute_types(0.02, bitmask=["xmin=0b11", "center=0b100"], center_radius=0.3)
+    assert (net.types_points & 0b11 == 0b11).sum() == 4
+    assert (net.types_points & 0b100).sum() > 0
+    assert net.types_faces.shape == (len(net.edges), 2)
+
+
+# extending the generator the way examples/custom_generator.py does
+
+def test_extension_in_process(tmp_path):
+    import custom_generator as cg
+    out = tmp_path / "ladder.geo.h5"
+    net = make_geo.main(["--ladder", "5", "-o", str(out)], network_cls=cg.LadderNetwork, parser=cg.parser)
+    assert isinstance(net, cg.LadderNetwork)
+    assert len(net.nodes) == 10 and len(net.edges) == 2 * 4 + 5
+    with h5py.File(out) as f:
+        assert f["domain/points"].shape == (10, 3)
+        assert (f["domain/types_points"][:] != 0).sum() == 4    # default xmin xmax: both rail ends
+    # the inherited generators and options keep working through the extended parser
+    net = make_geo.main(["--grid", "3", "--subdivide", "4", "-o", str(out)], network_cls=cg.LadderNetwork, parser=cg.parser)
+    assert len(net.edges) == 24
+
+
+def test_extension_cli(tmp_path):
+    out = tmp_path / "ladder.geo.h5"
+    subprocess.run([sys.executable, str(ROOT / "examples" / "custom_generator.py"),
+                    "--ladder", "6", "--dirichlet", "xmin", "-o", str(out)],
+                   check=True, capture_output=True, text=True)
+    with h5py.File(out) as f:
+        t = f["domain/types_points"][:]
+    assert len(t) == 12 and (t == 1).sum() == 2
