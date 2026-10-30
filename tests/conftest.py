@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "fiber_network"
 sys.path.insert(0, str(SCRIPTS))   # the scripts import each other as top-level modules
+sys.path.insert(0, str(ROOT / "examples"))
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 
