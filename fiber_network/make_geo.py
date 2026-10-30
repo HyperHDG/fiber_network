@@ -710,6 +710,18 @@ class Network:
 
 
   def compute_types(self, tol):
+    """Node types from the bounding box faces a node lies on (within tol * extent).
+
+    Default, --dirichlet FACE ...: HyperHDG's ternary convention (node_descriptor/cubic.hxx):
+    type = sum over axes of 3**axis * d, with d = 1 on the min face, 2 on the max face, 0
+    inside; x is axis 0. So xmin -> 1, xmax -> 2, ymin -> 3, ymax -> 6, zmin -> 9, zmax -> 18,
+    and a corner on xmin and ymax -> 7. Only the faces listed get a digit. Solvers then list
+    the types they treat as Dirichlet (dirichlet_nodes in their parameters).
+
+    --dirichlet-bitmask FACE=MASK ...: one bit per beam degree of freedom (timowave's
+    is_dirichlet), masks of several faces OR together; FACE may also be "center", a disc of
+    radius --center-radius around the sheet center.
+    """
     nodes = self.nodes
     edges = self.edges
 
@@ -717,23 +729,29 @@ class Network:
     maxs = nodes.max(axis=0)
     dims = maxs - mins
 
-    # small circle of nodes around the (xy) domain center
-    center = (mins[:2] + maxs[:2]) / 2
-    radius = args.center_radius * max(dims[0], dims[1])
-    dist = np.linalg.norm(nodes[:, :2] - center, axis=1)
+    sides = {}
+    for i, ax in enumerate("xyz"):
+      if dims[i] > 0:
+        sides[ax + "min"] = nodes[:, i] - mins[i] <= tol * dims[i]
+        sides[ax + "max"] = maxs[i] - nodes[:, i] <= tol * dims[i]
+      else:   # flat axis: no faces, else every node would be on both
+        sides[ax + "min"] = sides[ax + "max"] = np.zeros(len(nodes), dtype=bool)
 
-    sides = {
-      "xmin": nodes[:,0] - mins[0] <= tol * dims[0],
-      "xmax": maxs[0] - nodes[:,0] <= tol * dims[0],
-      "ymin": nodes[:,1] - mins[1] <= tol * dims[1],
-      "ymax": maxs[1] - nodes[:,1] <= tol * dims[1],
-      "center": dist <= radius,
-    }
-    tprint(f"center circle: c={center}, r={radius:.3e}, {sides['center'].sum()} nodes")
-
-    dir_side = np.array([sides[x.split('=')[0]]  for x in args.dirichlet])
-    dir_desc = np.array([int(x.split('=')[1], 0) for x in args.dirichlet], dtype=np.int32)
-    self.types_points = np.bitwise_or.reduce(dir_side * dir_desc[:, None], axis=0).astype(np.int32)
+    if args.dirichlet_bitmask:
+      # small circle of nodes around the (xy) domain center
+      center = (mins[:2] + maxs[:2]) / 2
+      radius = args.center_radius * max(dims[0], dims[1])
+      sides["center"] = np.linalg.norm(nodes[:, :2] - center, axis=1) <= radius
+      tprint(f"center circle: c={center}, r={radius:.3e}, {sides['center'].sum()} nodes")
+      dir_side = np.array([sides[x.split('=')[0]]  for x in args.dirichlet_bitmask])
+      dir_desc = np.array([int(x.split('=')[1], 0) for x in args.dirichlet_bitmask], dtype=np.int32)
+      self.types_points = np.bitwise_or.reduce(dir_side * dir_desc[:, None], axis=0).astype(np.int32)
+    else:
+      types = np.zeros(len(nodes), dtype=np.int32)
+      for face in args.dirichlet:
+        axis, end = "xyz".index(face[0]), face[1:]
+        types += sides[face] * (1 if end == "min" else 2) * 3 ** axis
+      self.types_points = types
 
     count_dir = (self.types_points != 0).sum()
     frac_dir = count_dir / len(self.types_points)
@@ -954,10 +972,16 @@ if __name__ == "__main__":
   parser.add_argument("-i", "--input", help="input", default=".")
   parser.add_argument("-o", "--output", help="output file: .geo.h5 (default), or .geo for the legacy ASCII format", default="graph.geo.h5")
   parser.add_argument("-t", "--dirichlet-tol", help="tolerance to the edge", type=float, default=2e-2)
-  parser.add_argument("--center-radius", help="radius of the 'center' dirichlet circle, relative to max xy extent", type=float, default=5e-2)
+  parser.add_argument("--center-radius", help="radius of the 'center' disc for --dirichlet-bitmask, relative to max xy extent", type=float, default=5e-2)
   parser.add_argument("--merge-tol", help="merge nodes tolerance", type=float, default=1e-6)
-  parser.add_argument("--dirichlet", help="borders to clamp as dirichlet",
-                      nargs="+", default=["xmin=0b111111","xmax=0b111111"])
+  parser.add_argument("--dirichlet", nargs="*", default=["xmin", "xmax"], metavar="FACE",
+                      choices=["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"],
+                      help="bounding box faces that get a node type, in HyperHDG's ternary convention "
+                           "(xmin 1, xmax 2, ymin 3, ymax 6, zmin 9, zmax 18, summed on corners); "
+                           "default xmin xmax, no argument for none")
+  parser.add_argument("--dirichlet-bitmask", nargs="+", default=None, metavar="FACE=MASK",
+                      help="instead of --dirichlet: node type as bit mask over the six beam dofs, "
+                           "e.g. xmin=0b111111 ymax=0b000111 center=0b111111 (timowave convention)")
   parser.add_argument("--min-comp-size", type=int, default=10)
   parser.add_argument("--check-dups", action="store_true",
     help="report bit-exact duplicate nodes/edges before merging (diagnostic only: "
@@ -1000,6 +1024,8 @@ if __name__ == "__main__":
                          "(= 1/P on a unit-bbox network); mass (property col 0) "
                          "is split evenly, other properties copied")
   args = parser.parse_args()
+  if args.dirichlet_bitmask and args.dirichlet != ["xmin", "xmax"]:
+    parser.error("--dirichlet and --dirichlet-bitmask exclude each other")
 
   rescale_props = None
   if args.rescale_props is not None:

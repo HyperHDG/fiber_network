@@ -91,10 +91,27 @@ def test_cli_geo_h5_layout_and_dirichlet_types(grid_h5):
         types_points = d["types_points"][:]
         types_faces = d["types_faces"][:]
         assert "VTKHDF" in f, "ParaView view missing"
-    # default --dirichlet: xmin and xmax faces, all six dofs (0b111111) -> 2 columns of 6 nodes
+    # default --dirichlet xmin xmax: ternary types 1 and 2, two columns of 6 nodes
     assert (types_points != 0).sum() == 12
-    assert set(np.unique(types_points)) == {0, 0b111111}
+    assert (types_points == 1).sum() == 6 and (types_points == 2).sum() == 6
     assert types_faces.shape == (60, 2)
+
+
+def test_cli_dirichlet_ternary_corner(tmp_path):
+    out = tmp_path / "g.geo.h5"
+    run("make_geo.py", "--grid", 6, "--dirichlet", "xmin", "ymax", "-o", out)
+    with h5py.File(out) as f:
+        t = f["domain/types_points"][:]
+    assert (t == 1).sum() == 5 and (t == 6).sum() == 5 and (t == 7).sum() == 1   # 1 + 2*3 on the corner
+    assert (t != 0).sum() == 11
+
+
+def test_cli_dirichlet_bitmask(tmp_path):
+    out = tmp_path / "g.geo.h5"
+    run("make_geo.py", "--grid", 6, "--dirichlet-bitmask", "xmin=0b111111", "ymax=0b000111", "-o", out)
+    with h5py.File(out) as f:
+        t = f["domain/types_points"][:]
+    assert (t == 0b111111).sum() == 6 and (t == 0b000111).sum() == 5   # masks OR on the corner
 
 
 def test_cli_legacy_geo(tmp_path):

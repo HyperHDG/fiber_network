@@ -38,7 +38,7 @@ A domain is one HDF5 file, `name.geo.h5`, with the group `/domain`:
 | `points` | (n_nodes, 3) | node coordinates |
 | `edges` | (n_edges, 2) | node indices of each beam |
 | `properties` | (n_edges, 17) | per-edge material data: mass, six stiffnesses, two normals, two widths, fiber id and edge id within the fiber, ... |
-| `types_points`, `types_faces` | (n_nodes,), (n_edges, 2) | Dirichlet type of each node and of each edge end: a bit mask over the six beam degrees of freedom, 0 for interior |
+| `types_points`, `types_faces` | (n_nodes,), (n_edges, 2) | type of each node and of each edge end, 0 inside. Ternary by default: 1 or 2 on the x faces, 3 or 6 on y, 9 or 18 on z, summed on corners, as HyperHDG's cubic node descriptor; or a bit mask over the six beam dofs with `--dirichlet-bitmask` |
 
 Attributes on `/domain` carry the sheet size and units. A `/VTKHDF` group holds a view of the
 same arrays, so ParaView opens the file directly. `make_geo.py` can also write the legacy
@@ -50,9 +50,9 @@ ASCII `.geo` format that HyperHDG read before.
   or convert a Morgan csv network (`-i folder` with `nodes.csv`, `fibers.csv`,
   `connections.csv`). Processing, in this order: clamp to a box (`--clamp-xy`), merge
   coincident nodes, subdivide long edges (`--subdivide P`, no edge longer than 1/P of the
-  sheet), property cutoffs, rescale, Dirichlet typing of the box faces
-  (`--dirichlet xmin=0b111111 ymax=0b000111 ...`, also `center`). `-o x.geo` selects the
-  legacy format.
+  sheet), property cutoffs, rescale, node types for the box faces (`--dirichlet xmin ymax`,
+  HyperHDG's ternary convention; or `--dirichlet-bitmask xmin=0b111111 center=0b000111` with
+  one bit per beam dof, the timowave convention). `-o x.geo` selects the legacy format.
 - `net_stats.py`: descriptive statistics of one or more domains as YAML, one top-level key per
   file: sheet, fibers, bonds, z distribution, cuts, optional METIS partition sizes. Written for
   real paper networks; on synthetic grids the fiber and bond sections are mostly empty.
