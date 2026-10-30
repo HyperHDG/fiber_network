@@ -174,3 +174,38 @@ def test_extension_cli(tmp_path):
     with h5py.File(out) as f:
         t = f["domain/types_points"][:]
     assert len(t) == 12 and (t == 1).sum() == 2
+
+
+# the three Morgan csv formats are detected by their files and columns; the old (2024)
+# one is small enough to synthesize: two fibers, one bond at their midpoints
+
+def write_old_format(d):
+    (d / "nodes.csv").write_text("Id,x,y,z\n0,0,0,0\n1,1e-3,0,0\n2,0,1e-4,0\n3,1e-3,1e-4,0\n")
+    (d / "fibers.csv").write_text("Id,node1,node2\n0,0,1\n1,2,3\n")
+    (d / "connections.csv").write_text("Id,fiber1,fiber2,a1,a2\n0,0,1,0.5,0.5\n")
+    cols = ",".join(f"p{i}" for i in range(12))
+    (d / "fibersProps.csv").write_text(f"Id,{cols}\n0,{','.join(['1']*12)}\n1,{','.join(['2']*12)}\n")
+    (d / "connectionsProp.csv").write_text(f"Id,{cols}\n0,{','.join(['3']*12)}\n")
+
+
+def test_read_morgan_old_format(tmp_path):
+    write_old_format(tmp_path)
+    net = make_geo.Network()
+    net.read_morgan(str(tmp_path))
+    assert net.nodes.shape == (6, 3)                      # 4 + the two bond points
+    np.testing.assert_allclose(net.nodes[:, 0].max(), 1e3)  # m -> um
+    assert net.edges.shape == (5, 2)                      # each fiber split in two + the bond
+    bond = net.edgeProps[:, 15] == -1
+    assert bond.sum() == 1 and np.isnan(net.edgeProps[~bond, 0]).all() and net.edgeProps[bond, 0][0] == 0
+    assert set(net.edgeProps[~bond, 15]) == {0, 1}        # fiber ids from components
+    np.testing.assert_allclose(net.edgeProps[bond, 1], 3e6)   # N -> kg um s^-2
+    check_graph(net)
+
+
+def test_cli_old_format(tmp_path):
+    write_old_format(tmp_path)
+    out = tmp_path / "old.geo.h5"
+    run("make_geo.py", "-i", tmp_path, "--min-comp-size", 1, "-o", out)   # default pruning would drop 6 nodes
+    with h5py.File(out) as f:
+        assert f["domain/edges"].shape[0] == 5
+        assert f["domain"].attrs["units"].startswith("1.000000 [kg]")

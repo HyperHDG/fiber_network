@@ -54,8 +54,8 @@ ASCII `.geo` format that HyperHDG read before.
 ## Scripts
 
 - `make_geo.py`: make a domain. Generators: `--grid N`, `--hex N`, `--mikado MASS [R]`;
-  or convert a Morgan csv network (`-i folder` with `nodes.csv`, `fibers.csv`,
-  `connections.csv`). Processing, in this order: clamp to a box (`--clamp-xy`), merge
+  or convert a Morgan csv network (`-i folder`; the 2024 format with `fibers.csv` and
+  `connections.csv`, and the 2026 formats with 13 or 17 property columns, are detected). Processing, in this order: clamp to a box (`--clamp-xy`), merge
   coincident nodes, subdivide long edges (`--subdivide P`, no edge longer than 1/P of the
   sheet), property cutoffs, rescale, node types for the box faces (`--dirichlet xmin ymax`,
   HyperHDG's ternary convention; or `--dirichlet-bitmask xmin=0b111111 center=0b000111` with

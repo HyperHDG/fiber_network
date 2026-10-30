@@ -335,7 +335,85 @@ class Network:
     ])
     tprint("edgeProps", self.edgeProps.shape)
 
+  @staticmethod
+  def fiber_ids_from_components(n_nodes, edges, bond):
+    """fiber_id per edge = connected component of the non-bond edges, -1 for bonds."""
+    fe = edges[~bond]
+    A = sp.coo_matrix((np.ones(len(fe)), (fe[:, 0], fe[:, 1])), shape=(n_nodes, n_nodes))
+    _, comp = sp.csgraph.connected_components(A, directed=False)
+    return np.where(bond, -1, comp[edges[:, 0]])
+
+
+  def read_morgan_old(self, path):
+    """Old (2024) morgan format, SI units, converted to (kg, um, s).
+
+      nodes.csv            Id,x,y,z
+      fibers.csv           Id,node1,node2          fibre edges
+      connections.csv      Id,fiber1,fiber2,a1,a2  bond between the points at parameters
+                                                   a1, a2 *inside* fibre edges fiber1, fiber2
+      fibersProps.csv,     Id,EA,...,n_23          12 columns, no mass, no widths
+      connectionsProp.csv
+
+    Fibre edges are split at the bond points so every bond ends on a node (as make_geo.py
+    did). There is no mass column: fibre masses are NaN, bond masses 0. Widths get the
+    same 10 um placeholder as the 2026-01-30 format.
+    """
+    rd = lambda n: pandas.read_csv(os.path.join(path, n)).to_numpy()[:, 1:]
+    nodes = rd("nodes.csv") * 1e6                               # m -> um
+    fib = rd("fibers.csv").astype(np.int64)
+    con = rd("connections.csv")
+    fprop, cprop = rd("fibersProps.csv").astype(float), rd("connectionsProp.csv").astype(float)
+    for p in (fprop, cprop):
+      p[:, 0:3] *= 1e6       # N -> kg um s^-2
+      p[:, 3:6] *= 1e18      # N m^2 -> kg um^3 s^-2
+    tprint(f"old format: {len(nodes)} nodes, {len(fib)} fibre edges, {len(con)} connections")
+
+    # one new node per distinct (fibre edge, parameter); a = 0 / 1 snap to the end nodes
+    f12 = np.r_[con[:, 0], con[:, 1]].astype(np.int64)
+    a12 = np.r_[con[:, 2], con[:, 3]]
+    order = np.lexsort((a12, f12))
+    fs, as_ = f12[order], a12[order]
+    first = np.r_[True, (fs[1:] != fs[:-1]) | (as_[1:] != as_[:-1])]
+    uid = np.cumsum(first) - 1
+    ue, ua = fs[first], as_[first]
+    nid = len(nodes) + np.arange(len(ue))
+    nid = np.where(ua == 0, fib[ue, 0], np.where(ua == 1, fib[ue, 1], nid))
+    newX = (1 - ua)[:, None] * nodes[fib[ue, 0]] + ua[:, None] * nodes[fib[ue, 1]]
+    end = np.empty(len(f12), dtype=np.int64)
+    end[order] = nid[uid]
+    bonds = end.reshape(2, -1).T
+
+    # rebuild fibre edges as chains through the interior points (ue is sorted by edge, a)
+    interior = (ua > 0) & (ua < 1)
+    ce, cn = ue[interior], np.r_[nid[interior], -1]           # pad: safe gather if empty
+    k = np.bincount(ce, minlength=len(fib))                    # interior points per edge
+    off = np.r_[0, np.cumsum(k)]
+    src = np.repeat(np.arange(len(fib)), k + 1)
+    pos = np.arange(len(src)) - np.repeat(off[:-1] + np.arange(len(fib)), k + 1)
+    left = np.where(pos == 0, fib[src, 0], cn[off[src] + (pos - 1).clip(0)])
+    right = np.where(pos == k[src], fib[src, 1], cn[off[src] + np.minimum(pos, k[src] - 1).clip(0)])
+    fedges = np.c_[left, right]
+
+    nodes = np.vstack([nodes, newX])
+    edges = np.vstack([fedges, bonds])
+    bond = np.r_[np.zeros(len(fedges), bool), np.ones(len(bonds), bool)]
+    edgeProps = np.zeros((len(edges), 17))
+    edgeProps[:, 0] = np.where(bond, 0., np.nan)
+    edgeProps[:, 1:13] = np.vstack([fprop[src], cprop])
+    edgeProps[:, 13:15] = 10.                                    # placeholder width [um]
+    edgeProps[:, 15] = self.fiber_ids_from_components(len(nodes), edges, bond)
+    edgeProps[:, 16] = np.where(bond, -1, 0)
+    tprint(f"  split at bond points: {len(nodes)} nodes, {len(fedges)} fibre edges, "
+           f"{len(bonds)} bonds")
+    info = {"units": "1.000000 [kg]\n1.000000 [um]\n1.000000 [s]\n"}
+    return nodes, edges, edgeProps, info
+
+
   def read_morgan(self, path, rescale_props=None, quirk=None):
+    if os.path.exists(os.path.join(path, "fibers.csv")):
+      nodes, edges, edgeProps, info = self.read_morgan_old(path)
+      return self._finish_read(nodes, edges, edgeProps, info, rescale_props)
+
     # sidecar cache of the parsed CSVs: parsing ~17 GB of text (100M-edge nets) costs
     # minutes even multi-threaded, re-reading the arrays from HDF5 costs seconds.
     # The raw arrays are cached (before --rescale-props / quirks, which vary per run).
@@ -371,23 +449,19 @@ class Network:
       except OSError as e:
         tprint(f"  cache write failed (non-fatal): {e}")
 
-    if rescale_props is not None:
-      n_props = edgeProps.shape[-1]
-      tprint("rescale_props", rescale_props)
-      edgeProps *= rescale_props
-
-    if quirk == "morgan-2026-01-30":
+    # 2026-01-30 format: 13 property columns, no widths / fiber_id / fiber_edge_id.
+    # Detected by column count (--quirk morgan-2026-01-30 is kept for old command lines).
+    if quirk == "morgan-2026-01-30" or edgeProps.shape[1] == 13:
       n_edges = edges.shape[0]
-      fiber_ids = np.arange(n_edges)
-      fiber_edge_ids = np.zeros(n_edges)
+      bond = edgeProps[:, 0] == 0          # bonds are the massless edges
+      fiber_ids = self.fiber_ids_from_components(nodes.shape[0], edges, bond)
+      fiber_edge_ids = np.where(bond, -1, 0)
       widths = np.ones(n_edges) * 10 # 10um default width
+      tprint(f"13-column format: {bond.sum()} massless bonds, "
+             f"{fiber_ids.max() + 1} fibres from components, 10 um placeholder widths")
       edgeProps = np.column_stack([
         edgeProps, widths, widths, fiber_ids, fiber_edge_ids,
       ])
-
-    tprint("nodes", nodes.shape)
-    tprint("edges", edges.shape)
-    tprint("edgeProps", edgeProps.shape)
 
     try:
       with open(path + '/info.txt') as f:
@@ -400,6 +474,18 @@ class Network:
         info["units"] = f.read()
     except FileNotFoundError:
       pass
+
+    self._finish_read(nodes, edges, edgeProps, info, rescale_props)
+
+
+  def _finish_read(self, nodes, edges, edgeProps, info, rescale_props=None):
+    if rescale_props is not None:
+      tprint("rescale_props", rescale_props)
+      edgeProps[:, :len(rescale_props)] *= rescale_props
+
+    tprint("nodes", nodes.shape)
+    tprint("edges", edges.shape)
+    tprint("edgeProps", edgeProps.shape)
 
     mins = nodes.min(axis=0)
     maxs = nodes.max(axis=0)
