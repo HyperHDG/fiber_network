@@ -10,9 +10,11 @@ O=examples/output; D=$O/mikado200-sub8.geo.h5
 pvbatch fiber_network/net_vis.py $D --warp-by none --arrows 0 -o $O/mikado.png
 pvbatch fiber_network/net_vis.py $D --warp-by none --arrows 0 --view iso --beams-scale 3 -o $O/mikado-iso.png
 
-# tubes of a fixed radius instead of beams, and a filled surface for networks finer than pixels
+# tubes of a fixed radius instead of beams
 pvbatch fiber_network/net_vis.py $D --warp-by none --arrows 0 --beams 0 -r 0.003 --tubes-sides 8 -o $O/mikado-tubes.png
-pvbatch fiber_network/net_vis.py $D --warp-by none --arrows 0 --surface -o $O/mikado-surface.png
+# for networks finer than the pixels, where lines moire, --surface --surface-alpha A fills the
+# net with a Delaunay surface (A about twice the mean edge length keeps the holes); useful
+# with --color-by on a result, pointless on a bare domain
 
 # a solver result on the domain (a VTKHDF file with point fields, e.g. from HyperHDG) colors
 # and warps by a field; "values:0" is component 0 of the array "values":
