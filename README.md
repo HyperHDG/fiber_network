@@ -5,11 +5,12 @@ generate or convert a network into a `.geo.h5` domain, look at it, and compute i
 
 ## How to install
 
-Python 3.10 or newer with numpy, scipy, pandas, h5py, pyyaml and matplotlib, plus pytest for
-the tests:
+Python 3.10 or newer. The packages (numpy, scipy, pandas, h5py, pyyaml, matplotlib, and
+pytest for the tests) are listed in `requirements.txt`:
 
 ```
-pip install numpy scipy pandas h5py pyyaml matplotlib pytest
+python -m venv .venv && source .venv/bin/activate     # optional
+pip install -r requirements.txt
 ```
 
 `net_vis.py` and `net_vis_coarse.py` render with ParaView and run under its batch interpreter
