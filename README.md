@@ -87,8 +87,8 @@ a ladder graph:
 python examples/custom_generator.py --ladder 8 --subdivide 4 -o ladder.geo.h5
 ```
 
-The hook returns `True` for a generated network and `False` for one read from files, which is
-what decides whether floating and small components are pruned.
+The hook returns `True` for a generated network and `False` for one read from files. Every
+network is pruned of components without a Dirichlet node and of those below `--min-comp-size`.
 
 ## Examples
 

@@ -1058,8 +1058,7 @@ class Network:
 
   def generate_from_args(self, args, parser):
     """Build the network from parsed options (see make_parser). Returns True for a
-    generated (synthetic) network, False for one read from files, which is pruned
-    of floating and small components later.
+    generated (synthetic) network, False for one read from files.
 
     A subclass with its own generator overrides this: handle its options, otherwise
     return super().generate_from_args(args, parser). See examples/custom_generator.py."""
@@ -1112,8 +1111,10 @@ class Network:
       return False
     return True
 
-  def process_from_args(self, args, synthetic):
-    """The processing steps after generation, in the order the options document."""
+  def process_from_args(self, args):
+    """The processing steps after generation, in the order the options document. Every
+    network, generated or read, loses its components without a Dirichlet node (they would
+    make any solve singular) and those below --min-comp-size."""
     tprint("info", self.info)
     if args.subdivide is not None:
       self.subdivide_long_edges(args.subdivide)
@@ -1125,8 +1126,7 @@ class Network:
       self.scale(args.scale)
     self.compute_types(args.dirichlet_tol, faces=args.dirichlet, bitmask=args.dirichlet_bitmask,
                        center_radius=args.center_radius)
-    if not synthetic:
-      self.drop_floating_and_small_components(args.min_comp_size)
+    self.drop_floating_and_small_components(args.min_comp_size)
 
   def write_from_args(self, args):
     if args.output.endswith(".geo"):
@@ -1152,7 +1152,8 @@ def make_parser():
   parser.add_argument("--dirichlet-bitmask", nargs="+", default=None, metavar="FACE=MASK",
                       help="instead of --dirichlet: node type as bit mask over the six beam dofs, "
                            "e.g. xmin=0b111111 ymax=0b000111 center=0b111111 (timowave convention)")
-  parser.add_argument("--min-comp-size", type=int, default=10)
+  parser.add_argument("--min-comp-size", type=int, default=10,
+                    help="drop connected components with fewer nodes; components without a Dirichlet node are always dropped")
   parser.add_argument("--check-dups", action="store_true",
     help="report bit-exact duplicate nodes/edges before merging (diagnostic only: "
          "duplicates are subsumed by the KD-tree merge; costs extra full sorts)")
@@ -1204,8 +1205,8 @@ def main(argv=None, network_cls=Network, parser=None):
   if args.dirichlet_bitmask and args.dirichlet != ["xmin", "xmax"]:
     parser.error("--dirichlet and --dirichlet-bitmask exclude each other")
   network = network_cls()
-  synthetic = network.generate_from_args(args, parser)
-  network.process_from_args(args, synthetic)
+  network.generate_from_args(args, parser)
+  network.process_from_args(args)
   network.write_from_args(args)
   return network
 

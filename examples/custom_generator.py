@@ -42,7 +42,7 @@ class LadderNetwork(Network):
       return super().generate_from_args(args, parser)
     self.generate_ladder(args.ladder, width=args.ladder_width)
     self.generate_synthetic_properties(width=0.01)
-    return True           # generated, not read: no component pruning
+    return True           # generated, not read
 
 
 parser = make_parser()
