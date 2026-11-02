@@ -3,8 +3,10 @@ pipeline through the command line."""
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import h5py
+import pytest
 import numpy as np
 
 import make_geo
@@ -209,3 +211,31 @@ def test_cli_old_format(tmp_path):
     with h5py.File(out) as f:
         assert f["domain/edges"].shape[0] == 5
         assert f["domain"].attrs["units"].startswith("1.000000 [kg]")
+
+
+# the 2024 reader reproduces HyperHDG's old domains/morgan/make_geo.py node for node, edge for
+# edge, on the small Zenodo network (doi 10.5281/zenodo.12751486); its output, converted to
+# .geo.h5, is the oracle in tests/data. The csv files are fetched from Zenodo when missing.
+
+def test_read_morgan_old_reproduces_the_old_converter(tmp_path_factory):
+    import io, urllib.request, zipfile
+    import h5py
+    cache = ROOT / ".cache" / "zenodo-12751486"
+    if not (cache / "small_network" / "fibers.csv").exists():
+        try:
+            data = urllib.request.urlopen("https://zenodo.org/api/records/12751486/files/small_network.zip/content", timeout=60).read()
+        except Exception as e:
+            pytest.skip(f"no Zenodo download: {e}")
+        (cache / "small_network").mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            for name in z.namelist():
+                if name.endswith(".csv"):
+                    (cache / "small_network" / Path(name).name).write_bytes(z.read(name))
+    net = make_geo.Network()
+    net.read_morgan(str(cache / "small_network"))
+    with h5py.File(ROOT / "tests" / "data" / "old_converter_small_network.geo.h5") as f:
+        points, edges, props = f["domain/points"][:], f["domain/edges"][:], f["domain/properties"][:]
+    np.testing.assert_allclose(net.nodes, points * 1e6, rtol=0, atol=1e-9)        # m -> um
+    np.testing.assert_array_equal(net.edges, edges)
+    scale = np.r_[np.full(3, 1e6), np.full(3, 1e18), np.ones(6)]
+    np.testing.assert_allclose(net.edgeProps[:, 1:13], props * scale, rtol=1e-12)

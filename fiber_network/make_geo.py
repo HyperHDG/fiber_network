@@ -354,57 +354,74 @@ class Network:
       fibersProps.csv,     Id,EA,...,n_23          12 columns, no mass, no widths
       connectionsProp.csv
 
-    Fibre edges are split at the bond points so every bond ends on a node (as make_geo.py
-    did). There is no mass column: fibre masses are NaN, bond masses 0. Widths get the
-    same 10 um placeholder as the 2026-01-30 format.
+    Reproduces HyperHDG's old domains/morgan/make_geo.py node for node, edge for edge, in its
+    order (fiber_network/tests checks that against that converter's output): the bond points
+    in connection order, each merged onto an earlier one within 1e-10 m; then, fibre by fibre
+    and only for fibres that have a connection, the end points unless already present; the
+    edges are all bonds first, then every fibre's segments between its sorted parameters.
+    Fibres without a connection are dropped, as that converter did. There is no mass column:
+    fibre masses are NaN, bond masses 0. Widths get the same 10 um placeholder as the
+    2026-01-30 format.
     """
     rd = lambda n: pandas.read_csv(os.path.join(path, n)).to_numpy()[:, 1:]
-    nodes = rd("nodes.csv") * 1e6                               # m -> um
+    nodes = rd("nodes.csv").astype(float)                           # SI here; scaled at the end
     fib = rd("fibers.csv").astype(np.int64)
     con = rd("connections.csv")
     fprop, cprop = rd("fibersProps.csv").astype(float), rd("connectionsProp.csv").astype(float)
-    for p in (fprop, cprop):
-      p[:, 0:3] *= 1e6       # N -> kg um s^-2
-      p[:, 3:6] *= 1e18      # N m^2 -> kg um^3 s^-2
+    f1, f2 = con[:, 0].astype(np.int64), con[:, 1].astype(np.int64)
+    a1, a2 = con[:, 2], con[:, 3]
     tprint(f"old format: {len(nodes)} nodes, {len(fib)} fibre edges, {len(con)} connections")
 
-    # one new node per distinct (fibre edge, parameter); a = 0 / 1 snap to the end nodes
-    f12 = np.r_[con[:, 0], con[:, 1]].astype(np.int64)
-    a12 = np.r_[con[:, 2], con[:, 3]]
-    order = np.lexsort((a12, f12))
-    fs, as_ = f12[order], a12[order]
-    first = np.r_[True, (fs[1:] != fs[:-1]) | (as_[1:] != as_[:-1])]
-    uid = np.cumsum(first) - 1
-    ue, ua = fs[first], as_[first]
-    nid = len(nodes) + np.arange(len(ue))
-    nid = np.where(ua == 0, fib[ue, 0], np.where(ua == 1, fib[ue, 1], nid))
-    newX = (1 - ua)[:, None] * nodes[fib[ue, 0]] + ua[:, None] * nodes[fib[ue, 1]]
-    end = np.empty(len(f12), dtype=np.int64)
-    end[order] = nid[uid]
-    bonds = end.reshape(2, -1).T
+    # bond points, interleaved a, b per connection; merged onto the earliest point within 1e-10
+    cand = np.empty((2 * len(con), 3))
+    cand[0::2] = (1 - a1)[:, None] * nodes[fib[f1, 0]] + a1[:, None] * nodes[fib[f1, 1]]
+    cand[1::2] = (1 - a2)[:, None] * nodes[fib[f2, 0]] + a2[:, None] * nodes[fib[f2, 1]]
+    pairs = cKDTree(cand).query_pairs(1e-10, output_type="ndarray")
+    graph = sp.coo_matrix((np.ones(len(pairs)), (pairs[:, 0], pairs[:, 1])), shape=(len(cand), len(cand)))
+    _, comp = sp.csgraph.connected_components(graph, directed=False)
+    first = np.full(comp.max() + 1, len(cand)); np.minimum.at(first, comp, np.arange(len(cand)))
+    rep = first[comp]                                              # the earliest point of each cluster
+    uniq, index = np.unique(rep, return_inverse=True)             # uniq is sorted = order of appearance
+    V = [tuple(p) for p in cand[uniq]]
+    pos = {v: i for i, v in enumerate(V)}
+    ia, ib = index[0::2], index[1::2]
+    keep = ia != ib
+    bonds = np.c_[ia[keep], ib[keep]]
+    bond_props = cprop[keep]
 
-    # rebuild fibre edges as chains through the interior points (ue is sorted by edge, a)
-    interior = (ua > 0) & (ua < 1)
-    ce, cn = ue[interior], np.r_[nid[interior], -1]           # pad: safe gather if empty
-    k = np.bincount(ce, minlength=len(fib))                    # interior points per edge
-    off = np.r_[0, np.cumsum(k)]
-    src = np.repeat(np.arange(len(fib)), k + 1)
-    pos = np.arange(len(src)) - np.repeat(off[:-1] + np.arange(len(fib)), k + 1)
-    left = np.where(pos == 0, fib[src, 0], cn[off[src] + (pos - 1).clip(0)])
-    right = np.where(pos == k[src], fib[src, 1], cn[off[src] + np.minimum(pos, k[src] - 1).clip(0)])
-    fedges = np.c_[left, right]
-
-    nodes = np.vstack([nodes, newX])
-    edges = np.vstack([fedges, bonds])
-    bond = np.r_[np.zeros(len(fedges), bool), np.ones(len(bonds), bool)]
+    # fibres with a connection, in fibre order: end points, then the segments between parameters
+    params = {}
+    for f, a in ((f1, a1), (f2, a2)):
+      for k in range(len(f)):
+        params.setdefault(int(f[k]), set()).add(float(a[k]))
+    fedges, fprops = [], []
+    for index_f in sorted(params):
+      A, B = nodes[fib[index_f, 0]], nodes[fib[index_f, 1]]
+      for pt in (A, B):
+        key = tuple(pt)
+        if key not in pos:
+          pos[key] = len(V); V.append(key)
+      h = [0.] + sorted(params[index_f]) + [1.]
+      for k in range(len(h) - 1):
+        q0 = tuple((1. - h[k]) * A + h[k] * B)
+        q1 = tuple((1. - h[k + 1]) * A + h[k + 1] * B)
+        i0, i1 = pos[q0], pos[q1]                                   # exact: the same arithmetic as above
+        if i0 != i1:
+          fedges.append((i0, i1)); fprops.append(fprop[index_f])
+    nodes = np.array(V) * 1e6                                       # m -> um
+    edges = np.vstack([bonds, np.array(fedges, dtype=np.int64)])
+    bond = np.r_[np.ones(len(bonds), bool), np.zeros(len(fedges), bool)]
+    props12 = np.vstack([bond_props, np.array(fprops)])
+    props12[:, 0:3] *= 1e6       # N -> kg um s^-2
+    props12[:, 3:6] *= 1e18      # N m^2 -> kg um^3 s^-2
     edgeProps = np.zeros((len(edges), 17))
     edgeProps[:, 0] = np.where(bond, 0., np.nan)
-    edgeProps[:, 1:13] = np.vstack([fprop[src], cprop])
-    edgeProps[:, 13:15] = 10.                                    # placeholder width [um]
+    edgeProps[:, 1:13] = props12
+    edgeProps[:, 13:15] = 10.                                       # placeholder width [um]
     edgeProps[:, 15] = self.fiber_ids_from_components(len(nodes), edges, bond)
     edgeProps[:, 16] = np.where(bond, -1, 0)
-    tprint(f"  split at bond points: {len(nodes)} nodes, {len(fedges)} fibre edges, "
-           f"{len(bonds)} bonds")
+    tprint(f"  {len(params)} of {len(fib)} fibres have connections; split at bond points: "
+           f"{len(nodes)} nodes, {len(fedges)} fibre edges, {len(bonds)} bonds")
     info = {"units": "1.000000 [kg]\n1.000000 [um]\n1.000000 [s]\n"}
     return nodes, edges, edgeProps, info
 
