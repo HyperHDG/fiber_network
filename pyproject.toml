@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fiber_network"
+version = "0.1.0"
+description = "Generate, convert, inspect and visualize dense fiber networks as .geo.h5 domains for HyperHDG"
+readme = "README.md"
+license = "LGPL-2.1-or-later"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "h5py", "pyyaml", "matplotlib", "joblib"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+make_geo = "fiber_network.make_geo:main"
+net_stats = "fiber_network.net_stats:main"
+
+[tool.setuptools]
+packages = ["fiber_network"]

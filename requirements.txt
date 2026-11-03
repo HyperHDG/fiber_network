@@ -4,4 +4,5 @@ pandas
 h5py
 pyyaml
 matplotlib
+joblib
 pytest
