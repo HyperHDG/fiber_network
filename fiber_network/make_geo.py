@@ -812,7 +812,7 @@ class Network:
     self.edgeProps = edgeProps
 
 
-  def compute_types(self, tol, faces=("xmin", "xmax"), bitmask=None, center_radius=0.05):
+  def compute_types(self, tol, faces=("xmin", "xmax", "ymin", "ymax"), bitmask=None, center_radius=0.05):
     """Node types from the bounding box faces a node lies on (within tol * extent).
 
     faces (--dirichlet FACE ...): HyperHDG's ternary convention (node_descriptor/cubic.hxx):
@@ -1153,6 +1153,9 @@ class Network:
       self.write_vtkhdf_view(args.output)
 
 
+DIRICHLET_DEFAULT = ["xmin", "xmax", "ymin", "ymax"]   # the faces --dirichlet types if not given
+
+
 def make_parser():
   """The command line of make_geo.py; an extension adds its own options to it."""
   parser = argparse.ArgumentParser(description="make_geo: generate, convert and process fiber network domains")
@@ -1161,11 +1164,11 @@ def make_parser():
   parser.add_argument("-t", "--dirichlet-tol", help="tolerance to the edge", type=float, default=2e-2)
   parser.add_argument("--center-radius", help="radius of the 'center' disc for --dirichlet-bitmask, relative to max xy extent", type=float, default=5e-2)
   parser.add_argument("--merge-tol", help="merge nodes tolerance", type=float, default=1e-6)
-  parser.add_argument("--dirichlet", nargs="*", default=["xmin", "xmax"], metavar="FACE",
+  parser.add_argument("--dirichlet", nargs="*", default=DIRICHLET_DEFAULT, metavar="FACE",
                       choices=["xmin", "xmax", "ymin", "ymax", "zmin", "zmax"],
                       help="bounding box faces that get a node type, in HyperHDG's ternary convention "
                            "(xmin 1, xmax 2, ymin 3, ymax 6, zmin 9, zmax 18, summed on corners); "
-                           "default xmin xmax, no argument for none")
+                           "default xmin xmax ymin ymax, no argument for none")
   parser.add_argument("--dirichlet-bitmask", nargs="+", default=None, metavar="FACE=MASK",
                       help="instead of --dirichlet: node type as bit mask over the six beam dofs, "
                            "e.g. xmin=0b111111 ymax=0b000111 center=0b111111 (timowave convention)")
@@ -1219,7 +1222,7 @@ def main(argv=None, network_cls=Network, parser=None):
   its Network subclass and its extended parser. Returns the network."""
   parser = parser or make_parser()
   args = parser.parse_args(argv)
-  if args.dirichlet_bitmask and args.dirichlet != ["xmin", "xmax"]:
+  if args.dirichlet_bitmask and args.dirichlet != DIRICHLET_DEFAULT:
     parser.error("--dirichlet and --dirichlet-bitmask exclude each other")
   network = network_cls()
   network.generate_from_args(args, parser)

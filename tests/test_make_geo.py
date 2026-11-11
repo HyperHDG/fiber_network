@@ -95,9 +95,11 @@ def test_cli_geo_h5_layout_and_dirichlet_types(grid_h5):
         types_points = d["types_points"][:]
         types_faces = d["types_faces"][:]
         assert "VTKHDF" in f, "ParaView view missing"
-    # default --dirichlet xmin xmax: ternary types 1 and 2, two columns of 6 nodes
-    assert (types_points != 0).sum() == 12
-    assert (types_points == 1).sum() == 6 and (types_points == 2).sum() == 6
+    # default --dirichlet xmin xmax ymin ymax: the 20 nodes on the boundary of the 6 x 6 grid,
+    # ternary types 1, 2, 3 and 6 on the sides (4 nodes each), their sums on the corners
+    assert (types_points != 0).sum() == 20
+    assert all((types_points == side).sum() == 4 for side in (1, 2, 3, 6))
+    assert sorted(types_points[np.isin(types_points, (4, 5, 7, 8))]) == [4, 5, 7, 8]
     assert types_faces.shape == (60, 2)
 
 
@@ -162,7 +164,7 @@ def test_extension_in_process(tmp_path):
     assert len(net.nodes) == 10 and len(net.edges) == 2 * 4 + 5
     with h5py.File(out) as f:
         assert f["domain/points"].shape == (10, 3)
-        assert (f["domain/types_points"][:] != 0).sum() == 4    # default xmin xmax: both rail ends
+        assert (f["domain/types_points"][:] != 0).sum() == 10   # default xmin xmax ymin ymax: the rails are the y faces
     # the inherited generators and options keep working through the extended parser
     net = make_geo.main(["--grid", "3", "--subdivide", "4", "-o", str(out)], network_cls=cg.LadderNetwork, parser=cg.parser)
     assert len(net.edges) == 24
